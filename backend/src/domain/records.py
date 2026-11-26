@@ -5,7 +5,7 @@ import re
 
 import numpy as np
 
-from .settings import COLUMNS, FEATURES, FIELDS, TARGET
+from .settings import BANDS, COLUMNS, FEATURES, FIELDS, TARGET
 
 CODE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 SPLITS = {"train", "holdout", "pending"}
@@ -36,6 +36,15 @@ def parse_measurement(value, field: str, line: int) -> float:
     raise ValueError(f"第 {line} 条{FIELDS[field]}须为 {low:g} 至 {high:g} 的有限数值。")
 
 
+def parse_reading(value, field: str, line: int, split: str) -> float | None:
+    blank = value is None or (isinstance(value, str) and not value.strip())
+    if blank and split == "pending" and field in BANDS:
+        return None
+    if blank and split == "pending":
+        raise ValueError(f"第 {line} 条{FIELDS[field]}不能为空，只有近红外波段允许待测试条留空。")
+    return parse_measurement(value, field, line)
+
+
 def normalize_rows(rows: list[dict]) -> list[dict]:
     ids = set()
     batch_splits = {}
@@ -54,7 +63,7 @@ def normalize_rows(rows: list[dict]) -> list[dict]:
             raise ValueError(f"第 {line} 条的样本用途须为 train、holdout 或 pending。")
         if batch_splits.setdefault(batch_id, split) != split:
             raise ValueError(f"制板批 {batch_id} 跨样本用途，请将同批试条整批划分。")
-        measurements = {field: parse_measurement(raw[field], field, line) for field in FEATURES}
+        measurements = {field: parse_reading(raw[field], field, line, split) for field in FEATURES}
         target = raw[TARGET]
         if split == "pending":
             if target is not None and not (isinstance(target, str) and not target.strip()):
@@ -71,9 +80,13 @@ def normalize_rows(rows: list[dict]) -> list[dict]:
     return records
 
 
-def predictors(rows: list[dict]) -> np.ndarray:
-    return np.array([[row[field] for field in FEATURES] for row in rows], dtype=float).reshape(-1, len(FEATURES))
+def predictors(rows: list[dict], features: tuple = FEATURES) -> np.ndarray:
+    return np.array([[row[field] for field in features] for row in rows], dtype=float).reshape(-1, len(features))
 
 
 def strengths(rows: list[dict]) -> np.ndarray:
     return np.array([row[TARGET] for row in rows], dtype=float)
+
+
+def missing_bands(row: dict) -> tuple:
+    return tuple(field for field in BANDS if row[field] is None)

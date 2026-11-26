@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from src.constants.workflow import Decision, Role, RunStatus
 from src.domain.project import SPEC
+from src.domain.settings import normalize_combos
 from src.models.review import Review
 from src.models.run import Run
 from src.services.audit import record
@@ -40,7 +41,11 @@ def validate_settings(settings):
     checked = {}
     for key, parameter in parameters.items():
         value = settings.get(key, parameter['default'])
-        if not math.isfinite(value) or not parameter['min'] <= value <= parameter['max']:
+        if parameter.get('type') == 'combos':
+            checked[key] = normalize_combos(value)
+            continue
+        if type(value) not in (int, float) or not math.isfinite(value) \
+                or not parameter['min'] <= value <= parameter['max']:
             raise ValueError(f"{parameter['label']}超出范围")
         if parameter['step'] == 1 and value != int(value):
             raise ValueError(f"{parameter['label']}必须是整数")

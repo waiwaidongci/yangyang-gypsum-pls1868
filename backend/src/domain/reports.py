@@ -2,6 +2,7 @@
 
 from math import sqrt
 
+from .dropout import ComboCheck, ComboOutcome
 from .pls import PLSPath
 from .selection import Candidate, FoldError
 from .settings import FEATURES
@@ -77,13 +78,16 @@ def calibration_tables(path: PLSPath, count: int) -> list[dict]:
     ]
 
 
-def handoff_tables(summary: list[dict], holdout: list[dict], pending: list[dict], count: int) -> list[dict]:
+def handoff_tables(summary: list[dict], holdout: list[dict], pending: list[dict],
+                   full_count: int, score_count: int) -> list[dict]:
     trace_labels = {"id": "试条编号", "batch_id": "制板批号", "predicted_mpa": "估计抗折（MPa）",
                     "outside_features": "超出训练范围的字段"}
-    scores = {f"score_{index}": f"潜变量 {index} 得分" for index in range(1, count + 1)}
+    scores = {f"score_{index}": f"潜变量 {index} 得分" for index in range(1, score_count + 1)}
+    holdout_scores = {f"score_{index}": f"潜变量 {index} 得分" for index in range(1, full_count + 1)}
     return [
         table("pending_estimates", "待测试条及实测优先顺序", {
-            "position": "交接顺序", **trace_labels, "priority": "实测优先级（1最高）", "action": "实测安排", **scores,
+            "position": "交接顺序", **trace_labels, "model": "估计所用模型",
+            "priority": "实测优先级（1最高）", "action": "实测安排", **scores,
         }, pending),
         table("holdout_errors", "独立批抗折误差", {
             "scope": "汇总层级", "batch_id": "留出制板批", "strips": "试条数", "rmse_mpa": "RMSE（MPa）",
@@ -91,6 +95,53 @@ def handoff_tables(summary: list[dict], holdout: list[dict], pending: list[dict]
             "baseline_rmse_mpa": "训练均值基线 RMSE（MPa）", "outside_strips": "读数越界条数",
         }, summary),
         table("holdout_predictions", "独立批逐条抗折对照", {
-            **trace_labels, "actual_mpa": "实测抗折（MPa）", "error_mpa": "估计减实测（MPa）", **scores,
+            **trace_labels, "actual_mpa": "实测抗折（MPa）", "error_mpa": "估计减实测（MPa）", **holdout_scores,
         }, holdout),
+    ]
+
+
+def dropout_tables(outcomes: list[ComboOutcome], checks: list[ComboCheck], margin: float) -> list[dict]:
+    model_rows = [{
+        "combo": outcome.model.key, "kept_features": len(outcome.model.features),
+        "components": outcome.model.count or None,
+        "cv_rmse_mpa": round(outcome.model.cv_rmse, 8) if outcome.model.cv_rmse is not None else None,
+        "holdout_rmse_mpa": round(outcome.holdout_rmse, 8) if outcome.holdout_rmse is not None else None,
+        "status": "禁用" if outcome.disabled else "通过", "reason": outcome.reason,
+    } for outcome in outcomes]
+    check_rows = [{
+        "combo": check.key, "batch_id": check.batch, "strips": check.strips,
+        "combo_rmse_mpa": round(check.combo_rmse, 8) if check.combo_rmse is not None else None,
+        "full_rmse_mpa": round(check.full_rmse, 8),
+        "excess_mpa": round(check.excess, 8) if check.excess is not None else None,
+        "margin_mpa": margin, "passed": check.passed,
+    } for check in checks]
+    calibration_rows = []
+    for outcome in outcomes:
+        if outcome.disabled:
+            continue
+        path, count = outcome.model.path, outcome.model.count
+        coefficients = path.coefficients(count)
+        for index, feature in enumerate(outcome.model.features):
+            calibration_rows.append({
+                "combo": outcome.model.key, "feature": feature,
+                "train_mean": float(path.mean[index]), "train_scale": float(path.scale[index]),
+                "train_min": float(path.low[index]), "train_max": float(path.high[index]),
+                "coefficient_mpa": float(coefficients[index]),
+            })
+    return [
+        table("dropout_models", "登记缺测组合模型及禁用清单", {
+            "combo": "缺测波段组合", "kept_features": "参与拟合通道数", "components": "选定潜变量数",
+            "cv_rmse_mpa": "训练批折外 RMSE（MPa）", "holdout_rmse_mpa": "独立留出 RMSE（MPa）",
+            "status": "核验结论", "reason": "禁用原因",
+        }, model_rows),
+        table("dropout_verification", "缺测组合逐批误差核验", {
+            "combo": "缺测波段组合", "batch_id": "留出制板批", "strips": "试条数",
+            "combo_rmse_mpa": "组合模型 RMSE（MPa）", "full_rmse_mpa": "全波段 RMSE（MPa）",
+            "excess_mpa": "超出全波段（MPa）", "margin_mpa": "约定值（MPa）", "passed": "该批通过",
+        }, check_rows),
+        table("dropout_calibration", "已通过缺测组合冻结参数", {
+            "combo": "缺测波段组合", "feature": "测量字段", "train_mean": "训练均值",
+            "train_scale": "训练尺度", "train_min": "训练最小值", "train_max": "训练最大值",
+            "coefficient_mpa": "原始量纲回归系数",
+        }, calibration_rows),
     ]

@@ -4,8 +4,9 @@ from collections import defaultdict
 
 import numpy as np
 
+from .dropout import ComboModel
 from .pls import PLSPath
-from .records import predictors, strengths
+from .records import missing_bands, predictors, strengths
 from .settings import FEATURES, TARGET
 
 
@@ -22,6 +23,59 @@ def trace_prediction(records: list[dict], path: PLSPath, count: int) -> list[dic
             "outside_features": ",".join(field for field, flag in zip(FEATURES, flags) if flag),
             **{f"score_{number}": round(float(score), 8) for number, score in enumerate(latent, 1)},
         })
+    return result
+
+
+def trace_combo(records: list[dict], combo: ComboModel) -> list[dict]:
+    x = predictors(records, combo.features)
+    predictions = combo.path.predict(x, combo.count)
+    scores = combo.path.scores(x, combo.count)
+    outside = (x < combo.path.low) | (x > combo.path.high)
+    result = []
+    for record, estimate, latent, flags in zip(records, predictions, scores, outside):
+        result.append({
+            "id": record["id"], "batch_id": record["batch_id"],
+            "predicted_mpa": float(estimate),
+            "outside_features": ",".join(field for field, flag in zip(combo.features, flags) if flag),
+            **{f"score_{number}": round(float(score), 8) for number, score in enumerate(latent, 1)},
+        })
+    return result
+
+
+def outside_readings(record: dict, path: PLSPath) -> str:
+    flags = []
+    for index, field in enumerate(FEATURES):
+        value = record[field]
+        if value is not None and (value < path.low[index] or value > path.high[index]):
+            flags.append(field)
+    return ",".join(flags)
+
+
+def pending_estimates(records: list[dict], full_path: PLSPath, full_count: int,
+                      combos: list[ComboModel], score_count: int) -> list[dict]:
+    groups = defaultdict(list)
+    for record in records:
+        groups[missing_bands(record)].append(record)
+    passed = {combo.bands: combo for combo in combos}
+    result = []
+    for bands, group in groups.items():
+        if not bands:
+            rows = trace_prediction(group, full_path, full_count)
+            for row in rows:
+                row["model"] = "全波段"
+        elif bands in passed:
+            rows = trace_combo(group, passed[bands])
+            for row in rows:
+                row["model"] = f"缺 {'+'.join(bands)}"
+        else:
+            rows = [{
+                "id": record["id"], "batch_id": record["batch_id"], "predicted_mpa": None,
+                "outside_features": outside_readings(record, full_path), "model": "无可用模型",
+            } for record in group]
+        result.extend(rows)
+    for row in result:
+        for number in range(1, score_count + 1):
+            row.setdefault(f"score_{number}", None)
     return result
 
 
@@ -55,13 +109,16 @@ def holdout_diagnostics(records: list[dict], path: PLSPath, count: int) -> tuple
 
 def pending_queue(trace: list[dict], threshold: float) -> tuple[list[dict], int]:
     for row in trace:
-        if row["outside_features"]:
+        if row["predicted_mpa"] is None:
+            row.update(action="无完全匹配的已通过模型，直接实测", priority=1)
+        elif row["outside_features"]:
             row.update(action="核对读数并优先实测", priority=1)
         elif row["predicted_mpa"] < threshold:
             row.update(action="低于筛查线，优先实测", priority=2)
         else:
             row.update(action="按班次常规实测", priority=3)
-    trace.sort(key=lambda row: (row["priority"], row["predicted_mpa"], row["id"]))
+    trace.sort(key=lambda row: (row["priority"], row["predicted_mpa"] is not None,
+                                row["predicted_mpa"] or 0.0, row["id"]))
     for index, row in enumerate(trace, 1):
         row["position"] = index
     return trace, sum(row["priority"] < 3 for row in trace)

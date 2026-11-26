@@ -28,6 +28,11 @@ class Candidate:
 def select_components(train: list[dict], maximum: int) -> tuple[Candidate, list[Candidate], list[FoldError]]:
     x, y = predictors(train), strengths(train)
     groups = np.array([row["batch_id"] for row in train])
+    return select_components_xy(x, y, groups, maximum)
+
+
+def select_components_xy(x: np.ndarray, y: np.ndarray, groups: np.ndarray,
+                         maximum: int) -> tuple[Candidate, list[Candidate], list[FoldError]]:
     batches = np.unique(groups)
     fold_errors = {count: [] for count in range(1, maximum + 1)}
     for batch in batches:

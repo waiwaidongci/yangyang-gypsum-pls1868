@@ -30,7 +30,7 @@ docker compose exec -T backend python -m scripts.seed_demo
 | 查阅模板 | `GET /api/spec` | `columns` 按导入表头顺序列出，`settings` 提供默认值与边界 |
 | 导入试条 | `POST /api/datasets` | JSON 的 `name` 和 `csv`，其中 `csv` 为 UTF-8 CSV 全文 |
 | 查看台账 | `GET /api/datasets`、`GET /api/datasets/{id}` | 台账摘要、校验散列和分页试条数据 |
-| 启动校准 | `POST /api/runs` | `dataset_id`、`label`、可选 `settings` |
+| 启动校准 | `POST /api/runs` | `dataset_id`、`label`、可选 `settings`（含缺测组合 `missing_combos` 与逐批约定值 `dropout_margin_mpa`，排队时锁定） |
 | 查看校准 | `GET /api/runs/{id}` | 等待 `completed`，在 `result` 中读摘要、指标及各表 |
 | 质量复核 | `POST /api/runs/{id}/review` | `decision` 为 `approved` 或 `rejected`，`note` 为复核意见 |
 | 下载表 | `GET /api/runs/{id}/export/{key}` | 复核批准后可下载，`key` 对应结果表标识 |
@@ -45,6 +45,6 @@ docker compose exec -T backend python -c 'from src.domain.project import SPEC, d
 
 ## 后端开发
 
-使用 Python 3.11，在 `backend` 安装 `requirements.txt`。可用 `DATABASE_URL` 和 `REDIS_URL` 指向已有 PostgreSQL、Redis，分别启动 `uvicorn src.main:app --port 19432` 和 `python -m src.worker`。`backend/src/domain` 按录入校验、模拟台账、PLS 路径、分量选型、独立回测和交接导出分工。`backend/src/{routes,services,models}` 提供 API、业务状态与持久化，`backend/{scripts,migrations}` 提供种子数据和数据库启动初始化。
+使用 Python 3.11，在 `backend` 安装 `requirements.txt`。可用 `DATABASE_URL` 和 `REDIS_URL` 指向已有 PostgreSQL、Redis，分别启动 `uvicorn src.main:app --port 19432` 和 `python -m src.worker`。`backend/src/domain` 按录入校验、模拟台账、PLS 路径、分量选型、缺测组合、独立回测和交接导出分工。`backend/src/{routes,services,models}` 提供 API、业务状态与持久化，`backend/{scripts,migrations}` 提供种子数据和数据库启动初始化。
 
 `backend/src/constants/workflow.py` 定义角色、运行状态和复核决定，分别用于路由授权、运行队列持久化和导出门槛。`train`、`holdout`、`pending` 由 `backend/src/domain/records.py` 校验，并用于 `project.py` 的分区编排。PLS1 生产计算使用 NumPy，随批次提供的 `test-artifacts/yangyang-gypsum-pls/tests/oracle.py` 使用 Krylov 子空间最小二乘独立核对。第三方依赖遵循各自许可证。

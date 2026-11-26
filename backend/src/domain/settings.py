@@ -4,6 +4,7 @@ FEATURES = (
     "nir_1200", "nir_1450", "nir_1550", "nir_1720", "nir_1940", "nir_2100",
     "density_kg_m3", "thickness_mm",
 )
+BANDS = tuple(field for field in FEATURES if field.startswith("nir_"))
 TARGET = "flexural_mpa"
 COLUMNS = ("id", "batch_id", "split", *FEATURES, TARGET)
 FIELDS = {
@@ -20,11 +21,16 @@ FIELDS = {
     "thickness_mm": "实测试条厚度（mm）",
     TARGET: "实测抗折强度（MPa）",
 }
+MAX_COMBOS = 16
 SETTINGS = [
     {"key": "max_components", "label": "候选潜变量上限", "default": 6,
      "min": 1, "max": len(FEATURES), "step": 1},
     {"key": "screening_mpa", "label": "优先实测筛查线（MPa）", "default": 4.2,
      "min": 0.1, "max": 30, "step": 0.1},
+    {"key": "dropout_margin_mpa", "label": "缺测组合逐批误差约定值（MPa）", "default": 0.1,
+     "min": 0.0, "max": 5.0, "step": 0.01},
+    {"key": "missing_combos", "label": "登记的缺测波段组合", "default": [],
+     "type": "combos", "bands": list(BANDS)},
 ]
 SPEC = {
     "columns": list(COLUMNS),
@@ -42,17 +48,44 @@ SPEC = {
 }
 
 
-def parse_settings(settings: dict) -> tuple[int, float]:
+def normalize_combos(value) -> list[list[str]]:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("登记的缺测波段组合须为数组，每项为一组波段编号。")
+    seen = set()
+    combos = []
+    for item in value:
+        if not isinstance(item, (list, tuple)) or not item:
+            raise ValueError("每种缺测组合须为非空波段数组。")
+        unknown = [band for band in item if band not in BANDS]
+        if unknown:
+            raise ValueError(f"缺测组合含未知波段：{', '.join(map(str, unknown))}。")
+        canonical = tuple(field for field in BANDS if field in set(item))
+        if canonical in seen:
+            raise ValueError(f"缺测组合 {'+'.join(canonical)} 重复登记。")
+        seen.add(canonical)
+        combos.append(list(canonical))
+    if len(combos) > MAX_COMBOS:
+        raise ValueError(f"缺测组合最多登记 {MAX_COMBOS} 种。")
+    return combos
+
+
+def parse_settings(settings: dict) -> tuple[int, float, float, list[tuple[str, ...]]]:
     if settings.keys() - {option["key"] for option in SETTINGS}:
-        raise ValueError("运行参数仅接受 max_components 和 screening_mpa。")
-    parsed = []
+        raise ValueError("运行参数仅接受 max_components、screening_mpa、dropout_margin_mpa 和 missing_combos。")
+    parsed = {}
     for option in SETTINGS:
         value = settings.get(option["key"], option["default"])
+        if option.get("type") == "combos":
+            parsed[option["key"]] = [tuple(combo) for combo in normalize_combos(value)]
+            continue
         low, high = option["min"], option["max"]
         if type(value) not in (int, float) or not low <= value <= high:
             raise ValueError(f'{option["label"]}须为 {low} 至 {high} 的数值。')
-        parsed.append(value)
-    maximum, threshold = parsed
+        parsed[option["key"]] = value
+    maximum = parsed["max_components"]
     if maximum != int(maximum):
         raise ValueError("候选潜变量上限须为整数。")
-    return int(maximum), float(threshold)
+    return (int(maximum), float(parsed["screening_mpa"]),
+            float(parsed["dropout_margin_mpa"]), parsed["missing_combos"])
